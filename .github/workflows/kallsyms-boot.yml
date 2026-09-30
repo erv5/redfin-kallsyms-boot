@@ -48,6 +48,7 @@ jobs:
         run: |
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
+            --latest=${{ matrix.offset == 0 }} \
             --title "LineageOS $OTA_DATE (redfin, full kallsyms)" \
             --notes "$(cat <<EOF
           Ready-to-flash boot image for LineageOS \`redfin\`, rebuilt with \`CONFIG_KALLSYMS_ALL=y\` (full kallsyms / rodata data symbols).
