@@ -1,26 +1,30 @@
 name: KALLSYMS_ALL boot.img (Pixel 5 / redfin)
 
-# Builds a KALLSYMS_ALL kernel matching the latest LineageOS redfin OTA and
-# publishes a ready-to-flash boot.img (full kallsyms / rodata data symbols).
-# Runs every Wednesday + on demand; one GitHub Release per LineageOS build
-# (tagged los-YYYYMMDD), skipped early if that release already exists.
+# Builds KALLSYMS_ALL kernels for the last few LineageOS redfin builds and
+# publishes a ready-to-flash boot.img each (full kallsyms / rodata data symbols).
+# Runs every Wednesday plus on demand. One GitHub Release per LineageOS build
+# (tagged los-YYYYMMDD), skipped early if that release already exists, so it keeps
+# the most recent builds available and self-heals if a week was ever missed.
 
 on:
   schedule:
-    - cron: '0 8 * * 3'      # every Wednesday 08:00 UTC — LOS redfin releases Monday, this gives
-                             # the OTA + mirrors 2 days to propagate before we build against it
+    - cron: '0 8 * * 3'      # every Wednesday 08:00 UTC. LOS redfin releases Monday, so this
+                             # gives the OTA and mirrors 2 days to propagate before we build.
   workflow_dispatch: {}       # "Run workflow" button
 
 permissions:
   contents: write             # needed to publish the Release
 
-concurrency:
-  group: kallsyms-build
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        offset: [0, 1, 2]     # 0 = newest LineageOS build, 1 = previous, 2 = the one before
+    concurrency:
+      group: kallsyms-build-${{ matrix.offset }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +38,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          BUILD_OFFSET: ${{ matrix.offset }}
         run: bash scripts/build-kallsyms-boot.sh
 
       - name: Publish release
@@ -43,7 +48,7 @@ jobs:
         run: |
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "LineageOS $OTA_DATE — redfin boot (full kallsyms)" \
+            --title "LineageOS $OTA_DATE (redfin, full kallsyms)" \
             --notes "$(cat <<EOF
           Ready-to-flash boot image for LineageOS \`redfin\`, rebuilt with \`CONFIG_KALLSYMS_ALL=y\` (full kallsyms / rodata data symbols).
 

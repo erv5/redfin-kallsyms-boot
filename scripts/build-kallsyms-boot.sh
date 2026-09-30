@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build a KALLSYMS_ALL Pixel 5 (redfin) kernel that matches the LATEST LineageOS
-# OTA, swap it into that OTA's boot.img, and publish a ready-to-patch boot.img.
+# Build a KALLSYMS_ALL Pixel 5 (redfin) kernel that matches a LineageOS OTA
+# (BUILD_OFFSET picks which one: 0 = newest, 1 = previous, ...), swap it into that
+# OTA's boot.img, and publish a ready-to-flash boot.img.
 #
 # Why this works (module-safe): we build from the EXACT kernel commit the OTA used,
 # with LineageOS's own redbull_defconfig, changing ONLY CONFIG_KALLSYMS_ALL=y
@@ -19,17 +20,21 @@ PDG_URL="https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/paylo
 
 W="$PWD/work"; OUT="$PWD/artifacts"; rm -rf "$W" "$OUT"; mkdir -p "$W" "$OUT"; cd "$W"
 
-echo "::group::1. Find latest LineageOS $DEVICE OTA"
+OFFSET="${BUILD_OFFSET:-0}"
+echo "::group::1. Find LineageOS $DEVICE OTA (offset $OFFSET, where 0 = newest)"
 curl -fsSL "https://download.lineageos.org/api/v2/devices/${DEVICE}/builds" > builds.json
-OTA_URL=$(jq -r 'sort_by(.datetime)|last|.files[]|select(.filename|endswith(".zip"))|.url' builds.json | tail -1)
-OTA_NAME=$(jq -r 'sort_by(.datetime)|last|.files[]|select(.filename|endswith(".zip"))|.filename' builds.json | tail -1)
-[ -n "$OTA_URL" ] && [ "$OTA_URL" != "null" ] || { echo "no OTA found"; exit 1; }
+# builds sorted oldest-first; pick the OFFSET-th from the newest end
+BUILD=$(jq -c --argjson off "$OFFSET" 'sort_by(.datetime) | .[-1 - $off] // empty' builds.json)
+[ -n "$BUILD" ] || { echo "no build at offset $OFFSET (fewer builds available); nothing to do"; echo "SKIP=1" >> "${GITHUB_ENV:-/dev/null}"; exit 0; }
+OTA_URL=$(echo "$BUILD" | jq -r '.files[]|select(.filename|endswith(".zip"))|.url' | tail -1)
+OTA_NAME=$(echo "$BUILD" | jq -r '.files[]|select(.filename|endswith(".zip"))|.filename' | tail -1)
+[ -n "$OTA_URL" ] && [ "$OTA_URL" != "null" ] || { echo "no OTA zip in build at offset $OFFSET"; exit 1; }
 OTA_DATE=$(echo "$OTA_NAME" | grep -oE '[0-9]{8}' | head -1); [ -n "$OTA_DATE" ] || OTA_DATE=$(date +%Y%m%d)
 TAG="los-${OTA_DATE}"
 echo "OTA: $OTA_NAME  (LineageOS release ${OTA_DATE}, tag ${TAG})"
 # One release per LineageOS build: skip early if this OTA is already done (before the big download/build).
 if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-  echo "Already built for LOS ${OTA_DATE} (${TAG}) — nothing to do."
+  echo "Already built for LOS ${OTA_DATE} (${TAG}); nothing to do."
   echo "SKIP=1" >> "${GITHUB_ENV:-/dev/null}"; exit 0
 fi
 echo "::endgroup::"
@@ -81,7 +86,7 @@ git init -q kernel && ( cd kernel
   make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null
   REL=$(make -s O=out ARCH=arm64 kernelrelease | tail -1)
   echo "built kernelrelease: $REL"
-  # SAFETY GATE: must match the OTA exactly, or vendor modules won't load — do NOT publish.
+  # SAFETY GATE: must match the OTA exactly, or vendor modules won't load, so do NOT publish.
   [ "$REL" = "$VER" ] || { echo "FATAL version mismatch: '$REL' != '$VER'"; exit 2; }
   grep -q '^CONFIG_KALLSYMS_ALL=y' out/.config || { echo "KALLSYMS_ALL missing"; exit 2; }
   make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" Image
