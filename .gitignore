@@ -1,0 +1,13 @@
+# Local boot-image backups — large, device-specific, never publish these
+boot-backups/
+
+# Build outputs created at runtime by scripts/build-kallsyms-boot.sh
+work/
+artifacts/
+*.img
+*.zip
+payload.bin
+
+# macOS / editor junk
+.DS_Store
+*.swp

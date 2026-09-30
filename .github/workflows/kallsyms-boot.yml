@@ -1,0 +1,61 @@
+name: KALLSYMS_ALL boot.img (Pixel 5 / redfin)
+
+# Builds a KALLSYMS_ALL kernel matching the latest LineageOS redfin OTA and
+# publishes a ready-to-flash boot.img (full kallsyms / rodata data symbols).
+# Runs every Wednesday + on demand; one GitHub Release per LineageOS build
+# (tagged los-YYYYMMDD), skipped early if that release already exists.
+
+on:
+  schedule:
+    - cron: '0 8 * * 3'      # every Wednesday 08:00 UTC — LOS redfin releases Monday, this gives
+                             # the OTA + mirrors 2 days to propagate before we build against it
+  workflow_dispatch: {}       # "Run workflow" button
+
+permissions:
+  contents: write             # needed to publish the Release
+
+concurrency:
+  group: kallsyms-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up runner disk (kernel build + OTA need space)
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+
+      - name: Build KALLSYMS_ALL boot.img
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/build-kallsyms-boot.sh
+
+      - name: Publish release
+        if: env.SKIP != '1' && env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "LineageOS $OTA_DATE — redfin boot (full kallsyms)" \
+            --notes "$(cat <<EOF
+          Ready-to-flash boot image for LineageOS \`redfin\`, rebuilt with \`CONFIG_KALLSYMS_ALL=y\` (full kallsyms / rodata data symbols).
+
+          - Built to match: \`$OTA_NAME\`
+          - Kernel: \`$VER\` (same version string as stock, so the vendor modules still load)
+
+          ## Flashing
+          1. Take the LineageOS update and reboot (this restores the stock kernel).
+          2. Download \`$BOOT_IMG\` below.
+          3. If you're rooted, patch it in your root manager first; then \`fastboot flash boot <img>\` (both slots) and reboot.
+
+          Keep your original boot.img as a fallback.
+          EOF
+          )" \
+            "artifacts/$BOOT_IMG"
