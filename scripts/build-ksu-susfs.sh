@@ -82,6 +82,8 @@ curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/ke
 [ -d "$KROOT/KernelSU-Next" ] || fail "KernelSU-Next not present (setup failed)"
 # crDroid's KSU-Next-side SUSFS integration (paths relative to KernelSU-Next root)
 ( cd KernelSU-Next && patch -p1 < "$WS/patches/ksunext/0001-ksun-v1.1.1-susfs.patch" ) || note "0001 ksun susfs patch had rejects"
+# disabled SUSFS sub-features leave some vars/functions unused; silence -Werror for the KSU driver
+echo 'ccflags-y += -Wno-unused-variable -Wno-unused-function -Wno-unused-but-set-variable' >> KernelSU-Next/kernel/Makefile
 # simonpunk SUSFS v1.5.5 kernel-side (same version as crDroid's ksun-patch)
 git clone -q --depth 1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu "$W/susfs" || fail "susfs clone"
 cp "$W/susfs/kernel_patches/fs/"* fs/ 2>/dev/null
