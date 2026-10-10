@@ -7,8 +7,10 @@
 # locally), so we just reproduce them here. Official KSU was dropped: its SELinux code
 # needs the 4.19 global `policydb`, which is static/unexported on this kernel.
 #
-#   patches/ksunext/0001-ksun-v1.1.1-susfs.patch     -> applied INSIDE KernelSU-Next
-#   patches/ksunext/0002-crdroid-kernelside-susfs.patch -> applied at the kernel root
+#   KSU-Next side:    crDroid ksun-patch (patches/ksunext/0001-ksun-v1.1.1-susfs.patch)
+#   kernel side:      simonpunk susfs4ksu kernel-4.19 (SUSFS v1.5.5, fetched at build),
+#                     plus patches/ksunext/0002-mount-vfsmount-field.patch for the one
+#                     mount.h hunk that rejects on this tree. SUS_MOUNT is left off.
 set -uo pipefail
 
 DEVICE="${DEVICE:-redfin}"
@@ -74,17 +76,22 @@ git init -q kernel
 KROOT="$W/kernel"
 echo "::endgroup::"
 
-echo "::group::5. KernelSU-Next $KSUNEXT_REF + crDroid SUSFS"
+echo "::group::5. KernelSU-Next $KSUNEXT_REF + SUSFS v1.5.5"
 cd "$KROOT"
 curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSUNEXT_REF" || note "KSU-Next setup returned nonzero"
 [ -d "$KROOT/KernelSU-Next" ] || fail "KernelSU-Next not present (setup failed)"
-# crDroid KSU-Next-side SUSFS integration (paths relative to KernelSU-Next root)
+# crDroid's KSU-Next-side SUSFS integration (paths relative to KernelSU-Next root)
 ( cd KernelSU-Next && patch -p1 < "$WS/patches/ksunext/0001-ksun-v1.1.1-susfs.patch" ) || note "0001 ksun susfs patch had rejects"
-# crDroid kernel-side SUSFS + manual hooks (paths relative to kernel root)
-patch -p1 < "$WS/patches/ksunext/0002-crdroid-kernelside-susfs.patch" || note "0002 kernel-side susfs had rejects"
+# simonpunk SUSFS v1.5.5 kernel-side (same version as crDroid's ksun-patch)
+git clone -q --depth 1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu "$W/susfs" || fail "susfs clone"
+cp "$W/susfs/kernel_patches/fs/"* fs/ 2>/dev/null
+cp "$W/susfs/kernel_patches/include/linux/"* include/linux/ 2>/dev/null
+patch -p1 < "$W/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch" || note "50_add rejects (fs/namespace.c SUS_MOUNT + mount.h are expected; SUS_MOUNT is off)"
+# add the vfsmount susfs field (the mount.h hunk rejects on this tree)
+patch -p1 < "$WS/patches/ksunext/0002-mount-vfsmount-field.patch" || note "mount.h field patch failed"
 find "$KROOT" -name '*.rej' | while read -r r; do rel="${r#$KROOT/}"; mkdir -p "$REJ/$(dirname "$rel")"; cp "$r" "$REJ/$rel"; done
 REJN=$(find "$KROOT" -name '*.rej' | wc -l | tr -d ' ')
-note "rejects after crDroid patches: $REJN"
+note "rejects after SUSFS patches: $REJN (fs/namespace.c SUS_MOUNT reject is expected)"
 echo "::endgroup::"
 
 echo "::group::6. Defconfig"
@@ -92,11 +99,14 @@ cd "$KROOT"
 make O=out ARCH=arm64 "$DEFCONFIG" >/dev/null || fail "defconfig"
 C=./scripts/config; F="--file out/.config"
 $C $F -e CONFIG_KSU 2>/dev/null || true
-# full SUSFS set (crDroid's kernel-side integration handles SUS_MOUNT on this tree)
-$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH -e CONFIG_KSU_SUSFS_SUS_MOUNT \
-   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_TRY_UMOUNT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
+# SUS_MOUNT/TRY_UMOUNT/HAS_MAGIC_MOUNT are the invasive fs/namespace.c pieces that reject
+# on this tree, so they stay OFF for the first boot. Everything else stays on, including
+# OPEN_REDIRECT (version-matched now, so susfs_get_redirected_path resolves).
+$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH \
+   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
    -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT -e CONFIG_KSU_SUSFS_ENABLE_LOG 2>/dev/null || true
+   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_ENABLE_LOG \
+   -d CONFIG_KSU_SUSFS_SUS_MOUNT -d CONFIG_KSU_SUSFS_TRY_UMOUNT -d CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT 2>/dev/null || true
 $C $F -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL -e CONFIG_THINLTO 2>/dev/null || true
 sed -i "s/printf '%s' -dirty/printf '%s' ''/g" scripts/setlocalversion 2>/dev/null || true
 make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null || note "olddefconfig warnings"
