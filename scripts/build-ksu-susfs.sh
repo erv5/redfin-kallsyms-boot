@@ -1,32 +1,29 @@
 #!/usr/bin/env bash
-# Build a KernelSU / KernelSU-Next + SUSFS redfin kernel for the latest LineageOS OTA.
+# Build a KernelSU-Next + SUSFS redfin kernel for the latest LineageOS OTA, using
+# crDroid's proven redbull integration (KSU-Next v1.1.1 + SUSFS v1.5.7).
 #
-#   VARIANT=ksu      -> official tiann/KernelSU (pinned pre-EOL tag) + simonpunk susfs 4.19
-#   VARIANT=ksunext  -> KernelSU-Next (legacy line)  + ShirkNeko susfs 4.19 (fallback simonpunk)
+# Why this is clean: crDroid maintains this exact integration for the redbull 4.19
+# kernel. Their two patches apply to the LineageOS tree with zero rejects (verified
+# locally), so we just reproduce them here. Official KSU was dropped: its SELinux code
+# needs the 4.19 global `policydb`, which is static/unexported on this kernel.
 #
-# IMPORTANT: this is an ITERATIVE build. Non-GKI 4.19 needs 5 hand-inserted manual
-# syscall hooks that setup.sh does NOT add, and the SUSFS KSU-side patch rejects on some
-# trees. So this script COLLECTS every .rej into artifacts/ and ATTEMPTS the build. It
-# produces a flashable zip only if the build actually succeeds, which needs the manual
-# hook patch (patches/manual-hooks-redbull-4.19.patch) and any reject fixes committed
-# under patches/<variant>/. Run 1 exists to surface the rejects + the build log.
-set -uo pipefail   # deliberately NOT -e: we want to reach reject collection even on failure
+#   patches/ksunext/0001-ksun-v1.1.1-susfs.patch     -> applied INSIDE KernelSU-Next
+#   patches/ksunext/0002-crdroid-kernelside-susfs.patch -> applied at the kernel root
+set -uo pipefail
 
-VARIANT="${VARIANT:-ksunext}"
 DEVICE="${DEVICE:-redfin}"
 KERNEL_REPO="${KERNEL_REPO:-https://github.com/LineageOS/android_kernel_google_redbull}"
 KERNEL_BRANCH="${KERNEL_BRANCH:-lineage-23.2}"
 DEFCONFIG="${DEFCONFIG:-redbull_defconfig}"
 CLANG_VER="${CLANG_VER:-20}"
-KSU_REF="${KSU_REF:-v1.0.5}"          # official KSU: last pre-EOL, susfs-4.19-era tag
-KSUNEXT_REF="${KSUNEXT_REF:-legacy}"  # KSU-Next: non-GKI legacy line
+KSUNEXT_REF="${KSUNEXT_REF:-v1.1.1}"   # version crDroid's patches target
 PDG_URL="https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_amd64.tar.gz"
 AK3_REPO="https://github.com/osm0sis/AnyKernel3"
 WS="${GITHUB_WORKSPACE:-$PWD}"
 
-W="$PWD/work"; OUT="$PWD/artifacts"; REJ="$OUT/rejects-$VARIANT"
+W="$PWD/work"; OUT="$PWD/artifacts"; REJ="$OUT/rejects"
 rm -rf "$W"; mkdir -p "$W" "$OUT" "$REJ"; cd "$W"
-LOG="$OUT/build-$VARIANT.log"; : > "$LOG"
+LOG="$OUT/build.log"; : > "$LOG"
 fail(){ echo "[FATAL] $*" | tee -a "$LOG"; exit 1; }
 note(){ echo "[note] $*" | tee -a "$LOG"; }
 
@@ -36,7 +33,8 @@ OTA_URL=$(jq -r 'sort_by(.datetime)|last|.files[]|select(.filename|endswith(".zi
 OTA_NAME=$(jq -r 'sort_by(.datetime)|last|.files[]|select(.filename|endswith(".zip"))|.filename' builds.json | tail -1)
 [ -n "$OTA_URL" ] && [ "$OTA_URL" != null ] || fail "no OTA"
 OTA_DATE=$(echo "$OTA_NAME" | grep -oE '[0-9]{8}' | head -1); [ -n "$OTA_DATE" ] || OTA_DATE=unknown
-note "OTA $OTA_NAME (LOS $OTA_DATE), variant=$VARIANT"
+TAG="ksunext-susfs-${OTA_DATE}"
+note "OTA $OTA_NAME (LOS $OTA_DATE)"
 echo "::endgroup::"
 
 echo "::group::2. Toolchain + tools"
@@ -76,95 +74,56 @@ git init -q kernel
 KROOT="$W/kernel"
 echo "::endgroup::"
 
-echo "::group::5. Integrate KSU ($VARIANT)"
+echo "::group::5. KernelSU-Next $KSUNEXT_REF + crDroid SUSFS"
 cd "$KROOT"
-if [ "$VARIANT" = ksu ]; then
-  KSU_DIR=KernelSU
-  curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/${KSU_REF}/kernel/setup.sh" | bash -s "$KSU_REF" || note "KSU setup nonzero"
-  SUSFS_REMOTE="https://gitlab.com/simonpunk/susfs4ksu"; SUSFS_BRANCH="kernel-4.19"
-else
-  KSU_DIR=KernelSU-Next
-  curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSUNEXT_REF" || note "KSU-Next setup nonzero"
-  SUSFS_REMOTE="https://github.com/ShirkNeko/susfs4ksu"; SUSFS_BRANCH="kernel-4.19"
-fi
-[ -d "$KROOT/$KSU_DIR" ] || note "WARNING: $KSU_DIR not present (setup failed)"
-echo "::endgroup::"
-
-echo "::group::6. Manual-hook patch (if committed)"
-HOOKP="$WS/patches/manual-hooks-redbull-4.19.patch"
-if [ -f "$HOOKP" ]; then
-  ( cd "$KROOT" && patch -p1 < "$HOOKP" ) && note "applied manual-hook patch" || note "manual-hook patch had rejects"
-else
-  note "NO manual-hook patch committed. Non-GKI KSU will compile but NOT hook, so root is non-functional until you add patches/manual-hooks-redbull-4.19.patch. See the guide section 4C."
-fi
-echo "::endgroup::"
-
-echo "::group::7. Apply SUSFS ($SUSFS_REMOTE@$SUSFS_BRANCH)"
-cd "$W"
-git clone -q "$SUSFS_REMOTE" susfs -b "$SUSFS_BRANCH" 2>/dev/null \
-  || { note "susfs source $SUSFS_REMOTE@$SUSFS_BRANCH unavailable; falling back to simonpunk"; git clone -q https://gitlab.com/simonpunk/susfs4ksu susfs -b kernel-4.19; }
-cp ./susfs/kernel_patches/fs/* "$KROOT/fs/" 2>/dev/null || note "no susfs fs/ files"
-cp ./susfs/kernel_patches/include/linux/* "$KROOT/include/linux/" 2>/dev/null || note "no susfs include/ files"
-cp ./susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch "$KROOT/" 2>/dev/null || true
-( cd "$KROOT" && patch -p1 < 50_add_susfs_in_kernel-4.19.patch ) || note "50_add_susfs had rejects"
-cp ./susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch "$KROOT/$KSU_DIR/" 2>/dev/null || true
-( cd "$KROOT/$KSU_DIR" && patch -p1 < 10_enable_susfs_for_ksu.patch ) || note "10_enable_susfs_for_ksu had rejects (expected on KSU-Next)"
-# optional committed reject-fix patches for this variant
-if ls "$WS/patches/$VARIANT/"*.patch >/dev/null 2>&1; then
-  for p in "$WS/patches/$VARIANT/"*.patch; do ( cd "$KROOT" && patch -p1 < "$p" ) && note "applied $(basename "$p")" || note "reject-fix $(basename "$p") failed"; done
-fi
-# collect every .rej, preserving relative path
+curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSUNEXT_REF" || note "KSU-Next setup returned nonzero"
+[ -d "$KROOT/KernelSU-Next" ] || fail "KernelSU-Next not present (setup failed)"
+# crDroid KSU-Next-side SUSFS integration (paths relative to KernelSU-Next root)
+( cd KernelSU-Next && patch -p1 < "$WS/patches/ksunext/0001-ksun-v1.1.1-susfs.patch" ) || note "0001 ksun susfs patch had rejects"
+# crDroid kernel-side SUSFS + manual hooks (paths relative to kernel root)
+patch -p1 < "$WS/patches/ksunext/0002-crdroid-kernelside-susfs.patch" || note "0002 kernel-side susfs had rejects"
 find "$KROOT" -name '*.rej' | while read -r r; do rel="${r#$KROOT/}"; mkdir -p "$REJ/$(dirname "$rel")"; cp "$r" "$REJ/$rel"; done
 REJN=$(find "$KROOT" -name '*.rej' | wc -l | tr -d ' ')
-note "collected $REJN reject file(s) into artifacts/rejects-$VARIANT/"
+note "rejects after crDroid patches: $REJN"
 echo "::endgroup::"
 
-echo "::group::8. Defconfig"
+echo "::group::6. Defconfig"
 cd "$KROOT"
 make O=out ARCH=arm64 "$DEFCONFIG" >/dev/null || fail "defconfig"
 C=./scripts/config; F="--file out/.config"
-$C $F -e CONFIG_KSU -e CONFIG_KSU_MANUAL_HOOK -d CONFIG_KSU_KPROBES_HOOK 2>/dev/null || true
-# First-boot SUSFS set: enable the features that apply cleanly to the redbull tree.
-# SUS_MOUNT / TRY_UMOUNT / HAS_MAGIC_MOUNT are the invasive fs/namespace.c pieces that
-# reject on this tree, so they stay OFF until that merge is done (tracked in patches/).
-$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH \
-   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
+$C $F -e CONFIG_KSU 2>/dev/null || true
+# full SUSFS set (crDroid's kernel-side integration handles SUS_MOUNT on this tree)
+$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH -e CONFIG_KSU_SUSFS_SUS_MOUNT \
+   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_TRY_UMOUNT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
    -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_ENABLE_LOG \
-   -d CONFIG_KSU_SUSFS_SUS_MOUNT -d CONFIG_KSU_SUSFS_TRY_UMOUNT -d CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT 2>/dev/null || true
+   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT -e CONFIG_KSU_SUSFS_ENABLE_LOG 2>/dev/null || true
 $C $F -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL -e CONFIG_THINLTO 2>/dev/null || true
 sed -i "s/printf '%s' -dirty/printf '%s' ''/g" scripts/setlocalversion 2>/dev/null || true
 make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null || note "olddefconfig warnings"
-grep -E 'CONFIG_KSU=|CONFIG_KSU_SUSFS' out/.config | tee "$OUT/config-$VARIANT.txt" || note "KSU configs not present (patch rejects left them out)"
+grep -E 'CONFIG_KSU=|CONFIG_KSU_SUSFS' out/.config | tee "$OUT/config.txt" || note "KSU configs missing"
 echo "::endgroup::"
 
-echo "::group::9. kernelrelease gate"
+echo "::group::7. kernelrelease gate"
 REL=$(make -s O=out ARCH=arm64 kernelrelease 2>/dev/null | tail -1)
-echo "kernelrelease=$REL" | tee    "$OUT/kernelrelease-$VARIANT.txt"
-echo "ota_version=$VER"   | tee -a "$OUT/kernelrelease-$VARIANT.txt"
+{ echo "kernelrelease=$REL"; echo "ota_version=$VER"; } | tee "$OUT/kernelrelease.txt"
 [ "$REL" = "$VER" ] && note "kernelrelease MATCHES OTA" || note "WARNING kernelrelease != OTA ($REL vs $VER): do NOT flash"
 echo "::endgroup::"
 
-echo "::group::10. Build Image"
+echo "::group::8. Build Image"
 export ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
 BUILT=0
-if make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" Image 2>&1 | tee -a "$LOG"; then
-  BUILT=1
-else
-  note "BUILD FAILED (expected until manual hooks + rejects are resolved). Rejects + log are in artifacts/."
-fi
+if make O=out ARCH=arm64 LLVM=1 LLVM_IAS=1 -j"$(nproc)" Image 2>&1 | tee -a "$LOG"; then BUILT=1; else note "BUILD FAILED; see build.log + rejects"; fi
 echo "::endgroup::"
 
-echo "::group::11. Package (only if built)"
+echo "::group::9. Package (only if built and version matches)"
 if [ "$BUILT" = 1 ] && [ -f out/arch/arm64/boot/Image ] && [ "$REL" = "$VER" ]; then
   cp out/arch/arm64/boot/Image "$W/bx/kernel"
-  ( cd "$W/bx" && "$W/magiskboot" repack boot.img "$OUT/boot-${VARIANT}-susfs-${OTA_DATE}.img" >/dev/null ) && note "wrote boot-${VARIANT}-susfs-${OTA_DATE}.img" || note "repack failed"
+  ( cd "$W/bx" && "$W/magiskboot" repack boot.img "$OUT/boot-ksunext-susfs-${OTA_DATE}.img" >/dev/null ) && note "wrote boot-ksunext-susfs-${OTA_DATE}.img" || note "repack failed"
   git clone -q --depth 1 "$AK3_REPO" "$W/ak3" && rm -rf "$W/ak3/.git"
   cp out/arch/arm64/boot/Image "$W/ak3/Image"
   cat > "$W/ak3/anykernel.sh" <<AK
-# AnyKernel3 config (redfin, A/B, boot partition)
 properties() { '
-kernel.string=redfin ${VARIANT}+susfs ${VER}
+kernel.string=redfin KSU-Next+SUSFS ${VER}
 do.devicecheck=1
 do.modules=0
 do.systemless=1
@@ -179,13 +138,12 @@ ramdisk_compression=auto;
 split_boot;
 flash_boot;
 AK
-  ( cd "$W/ak3" && zip -r9 "$OUT/boot-${VARIANT}-susfs.zip" . -x '.git*' >/dev/null ) && note "wrote boot-${VARIANT}-susfs.zip"
+  ( cd "$W/ak3" && zip -r9 "$OUT/boot-ksunext-susfs-${OTA_DATE}.zip" . -x '.git*' >/dev/null ) && note "wrote boot-ksunext-susfs-${OTA_DATE}.zip"
 else
-  note "no flashable output (build not successful or version mismatch); see rejects + log"
+  note "no flashable output (build failed or version mismatch); see rejects + build.log"
 fi
 echo "::endgroup::"
 
-{ echo "VARIANT=$VARIANT"; echo "OTA_DATE=$OTA_DATE"; echo "VER=$VER"; echo "REL=$REL"; echo "BUILT=$BUILT"; echo "REJECTS=$REJN"; } >> "${GITHUB_ENV:-/dev/null}"
-echo "SUMMARY variant=$VARIANT built=$BUILT rejects=$REJN kernelrelease_match=$([ "$REL" = "$VER" ] && echo yes || echo no)"
-# exit nonzero when not yet flashable, so CI status reflects reality (artifacts still upload via if: always())
+{ echo "TAG=$TAG"; echo "OTA_DATE=$OTA_DATE"; echo "OTA_NAME=$OTA_NAME"; echo "VER=$VER"; echo "REL=$REL"; echo "BUILT=$BUILT"; echo "REJECTS=$REJN"; } >> "${GITHUB_ENV:-/dev/null}"
+echo "SUMMARY built=$BUILT rejects=$REJN kernelrelease_match=$([ "$REL" = "$VER" ] && echo yes || echo no)"
 [ "$BUILT" = 1 ] && [ "$REL" = "$VER" ] && exit 0 || exit 3

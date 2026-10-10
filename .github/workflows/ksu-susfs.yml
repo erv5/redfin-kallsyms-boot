@@ -1,30 +1,25 @@
-name: KSU + KSU-Next + SUSFS (redfin) [experimental]
+name: KSU-Next + SUSFS (redfin)
 
-# Builds two variants of a KernelSU + SUSFS redfin kernel in parallel:
-#   ksu      = official tiann/KernelSU (pinned pre-EOL tag v1.0.5) + simonpunk susfs 4.19
-#   ksunext  = KernelSU-Next (legacy)  + ShirkNeko susfs 4.19 (fallback simonpunk)
-#
-# This is ITERATIVE. Non-GKI 4.19 needs 5 hand-inserted manual hooks that setup.sh does
-# not add, and the SUSFS KSU-side patch rejects on some trees. So the first runs exist to
-# collect every .rej and the build log as artifacts. A flashable zip is produced only when
-# the build actually succeeds (after you commit patches/manual-hooks-redbull-4.19.patch and
-# any reject fixes under patches/<variant>/). Manual trigger only, from the Actions tab.
+# Builds a KernelSU-Next + SUSFS redfin kernel matching the latest LineageOS OTA, using
+# crDroid's proven redbull integration (KSU-Next v1.1.1 + SUSFS v1.5.7). On success it
+# publishes a ready-to-flash boot.img + AnyKernel3 zip as a Release, and always uploads
+# the build log + any rejects as artifacts. Runs every Wednesday + on demand.
 
 on:
   schedule:
-    - cron: '0 9 * * 3'   # Wednesday 09:00 UTC, an hour after the KALLSYMS build
+    - cron: '0 9 * * 3'
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: ksu-susfs
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [ksu, ksunext]
     steps:
       - uses: actions/checkout@v4
 
@@ -34,31 +29,45 @@ jobs:
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
           df -h /
 
-      - name: Build ${{ matrix.variant }}
+      - name: Build KSU-Next + SUSFS
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          VARIANT: ${{ matrix.variant }}
         run: bash scripts/build-ksu-susfs.sh
 
-      - name: Upload rejects + build log (always)
+      - name: Upload build log + rejects (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.variant }}-rejects-and-logs
+          name: ksu-susfs-logs
           path: |
-            artifacts/rejects-${{ matrix.variant }}/**
-            artifacts/build-${{ matrix.variant }}.log
-            artifacts/config-${{ matrix.variant }}.txt
-            artifacts/kernelrelease-${{ matrix.variant }}.txt
+            artifacts/build.log
+            artifacts/config.txt
+            artifacts/kernelrelease.txt
+            artifacts/rejects/**
           if-no-files-found: warn
 
-      - name: Upload flashable outputs (only if the build succeeded)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.variant }}-flashable
-          path: |
-            artifacts/boot-${{ matrix.variant }}-susfs.zip
-            artifacts/boot-${{ matrix.variant }}-susfs-*.img
-          if-no-files-found: ignore
+      - name: Publish release (on success)
+        if: env.BUILT == '1' && env.TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "LineageOS $OTA_DATE (redfin, KSU-Next + SUSFS)" \
+            --notes "$(cat <<EOF
+          Ready-to-flash KernelSU-Next + SUSFS boot image for LineageOS \`redfin\`, matching:
+          - LineageOS OTA: \`$OTA_NAME\`
+          - Kernel: \`$VER\` (same version string as stock, so your vendor modules still load)
+          - KernelSU-Next v1.1.1 + SUSFS, via crDroid's redbull integration.
+
+          ## Flashing
+          1. Take the LineageOS update and reboot.
+          2. Download \`boot-ksunext-susfs-$OTA_DATE.img\` (or the AnyKernel3 \`.zip\`) below.
+          3. \`fastboot flash boot boot-ksunext-susfs-$OTA_DATE.img\` on both slots and reboot, or sideload the zip in LineageOS recovery.
+          4. Install the KernelSU-Next Manager, grant root. Multi-user: manage grants from User 0; root in User 10/work profiles works (see README).
+
+          Keep your original boot.img as a fallback.
+          EOF
+          )" \
+            artifacts/boot-ksunext-susfs-*.img artifacts/boot-ksunext-susfs-*.zip
