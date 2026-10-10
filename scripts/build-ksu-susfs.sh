@@ -124,10 +124,14 @@ cd "$KROOT"
 make O=out ARCH=arm64 "$DEFCONFIG" >/dev/null || fail "defconfig"
 C=./scripts/config; F="--file out/.config"
 $C $F -e CONFIG_KSU -e CONFIG_KSU_MANUAL_HOOK -d CONFIG_KSU_KPROBES_HOOK 2>/dev/null || true
-$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH -e CONFIG_KSU_SUSFS_SUS_MOUNT \
-   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_TRY_UMOUNT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
+# First-boot SUSFS set: enable the features that apply cleanly to the redbull tree.
+# SUS_MOUNT / TRY_UMOUNT / HAS_MAGIC_MOUNT are the invasive fs/namespace.c pieces that
+# reject on this tree, so they stay OFF until that merge is done (tracked in patches/).
+$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH \
+   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
    -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT -e CONFIG_KSU_SUSFS_ENABLE_LOG 2>/dev/null || true
+   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_ENABLE_LOG \
+   -d CONFIG_KSU_SUSFS_SUS_MOUNT -d CONFIG_KSU_SUSFS_TRY_UMOUNT -d CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT 2>/dev/null || true
 $C $F -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL -e CONFIG_THINLTO 2>/dev/null || true
 sed -i "s/printf '%s' -dirty/printf '%s' ''/g" scripts/setlocalversion 2>/dev/null || true
 make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null || note "olddefconfig warnings"

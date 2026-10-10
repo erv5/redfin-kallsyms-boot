@@ -11,6 +11,8 @@ name: KSU + KSU-Next + SUSFS (redfin) [experimental]
 # any reject fixes under patches/<variant>/). Manual trigger only, from the Actions tab.
 
 on:
+  schedule:
+    - cron: '0 9 * * 3'   # Wednesday 09:00 UTC, an hour after the KALLSYMS build
   workflow_dispatch: {}
 
 permissions:
