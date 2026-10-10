@@ -45,6 +45,8 @@ jobs:
             artifacts/config.txt
             artifacts/kernelrelease.txt
             artifacts/rejects/**
+            artifacts/boot-ksunext-susfs-*.img
+            artifacts/boot-ksunext-susfs-*.zip
           if-no-files-found: warn
 
       - name: Publish release (on success)
@@ -52,6 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # replace any existing release for this OTA (idempotent re-runs)
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "LineageOS $OTA_DATE (redfin, KSU-Next + SUSFS)" \
