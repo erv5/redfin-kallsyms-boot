@@ -96,6 +96,8 @@ cp "$W/susfs/kernel_patches/include/linux/"* include/linux/ 2>/dev/null
 patch -p1 < "$W/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch" || note "50_add rejects (fs/namespace.c SUS_MOUNT + mount.h are expected; SUS_MOUNT is off)"
 # add the vfsmount susfs field (the mount.h hunk rejects on this tree)
 patch -p1 < "$WS/patches/ksunext/0002-mount-vfsmount-field.patch" || note "mount.h field patch failed"
+# full SUSFS: merge the fs/namespace.c SUS_MOUNT hunks (adapted to the A16 fs_context mount path)
+patch -p1 < "$WS/patches/ksunext/0003-namespace-sus-mount.patch" || note "0003 namespace SUS_MOUNT had rejects"
 # Backport path_umount/can_umount for KSU_UMOUNT (absent on 4.19, added upstream in 5.9).
 # crDroid backports these via a Makefile sed that races the build order; do it up-front.
 python3 - "$KROOT" <<'PY'
@@ -135,14 +137,11 @@ cd "$KROOT"
 make O=out ARCH=arm64 "$DEFCONFIG" >/dev/null || fail "defconfig"
 C=./scripts/config; F="--file out/.config"
 $C $F -e CONFIG_KSU 2>/dev/null || true
-# SUS_MOUNT/TRY_UMOUNT/HAS_MAGIC_MOUNT are the invasive fs/namespace.c pieces that reject
-# on this tree, so they stay OFF for the first boot. Everything else stays on, including
-# OPEN_REDIRECT (version-matched now, so susfs_get_redirected_path resolves).
-$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH \
-   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
+# Full SUSFS set. SUS_MOUNT's fs/namespace.c hunks are merged via patches/ksunext/0003.
+$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH -e CONFIG_KSU_SUSFS_SUS_MOUNT \
+   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_TRY_UMOUNT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
    -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_ENABLE_LOG \
-   -d CONFIG_KSU_SUSFS_SUS_MOUNT -d CONFIG_KSU_SUSFS_TRY_UMOUNT -d CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT 2>/dev/null || true
+   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT -e CONFIG_KSU_SUSFS_ENABLE_LOG 2>/dev/null || true
 # Use FULL LTO like stock redbull + crDroid (THINLTO on arm64 + MODVERSIONS emits ABS32
 # relocs against __crc_* symbols that lld rejects). Keep KALLSYMS_ALL for the KPM data syms.
 $C $F -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL -d CONFIG_THINLTO 2>/dev/null || true
