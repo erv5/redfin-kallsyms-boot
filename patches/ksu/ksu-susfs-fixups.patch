@@ -1,11 +1,14 @@
 diff --git a/KernelSU/kernel/Makefile b/KernelSU/kernel/Makefile
-index 9fec3ef38..8017234fe 100644
+index 9fec3ef38..36505aaca 100644
 --- a/KernelSU/kernel/Makefile
 +++ b/KernelSU/kernel/Makefile
-@@ -51,4 +51,82 @@ ccflags-y += -DEXPECTED_HASH=\"$(KSU_EXPECTED_HASH)\"
- ccflags-y += -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat
- ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
+@@ -49,6 +49,84 @@ ccflags-y += -DEXPECTED_SIZE=$(KSU_EXPECTED_SIZE)
+ ccflags-y += -DEXPECTED_HASH=\"$(KSU_EXPECTED_HASH)\"
  
+ ccflags-y += -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat
+-ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
++ccflags-y += -Wno-declaration-after-statement -Wno-unused-function -Wno-unused-variable
++
 +
 +## For non-gki compatiblity ##
 +ifeq ($(shell grep -q " current_sid(void)" $(srctree)/security/selinux/include/objsec.h; echo $$?),0)
@@ -83,7 +86,7 @@ index 9fec3ef38..8017234fe 100644
 +$(info -- Read: https://gitlab.com/simonpunk/susfs4ksu)
 +endif
 +# Keep a new line here!! Because someone may append config
-+
+ 
  # Keep a new line here!! Because someone may append config
 diff --git a/KernelSU/kernel/core_hook.c b/KernelSU/kernel/core_hook.c
 index 9bc2ded25..daa9296a1 100644
