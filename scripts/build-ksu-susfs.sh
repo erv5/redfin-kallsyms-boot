@@ -15,6 +15,7 @@ set -uo pipefail   # deliberately NOT -e: we want to reach reject collection eve
 VARIANT="${VARIANT:-ksunext}"
 DEVICE="${DEVICE:-redfin}"
 KERNEL_REPO="${KERNEL_REPO:-https://github.com/LineageOS/android_kernel_google_redbull}"
+KERNEL_BRANCH="${KERNEL_BRANCH:-lineage-23.2}"
 DEFCONFIG="${DEFCONFIG:-redbull_defconfig}"
 CLANG_VER="${CLANG_VER:-20}"
 KSU_REF="${KSU_REF:-v1.0.5}"          # official KSU: last pre-EOL, susfs-4.19-era tag
@@ -66,8 +67,12 @@ note "OTA kernel $VER (commit $SHA)"
 echo "::endgroup::"
 
 echo "::group::4. Clone kernel @ $SHA"
-git clone -q "$KERNEL_REPO" kernel
-( cd kernel && git fetch -q --depth 1 origin "$SHA" && git checkout -q "$SHA" ) || fail "checkout $SHA"
+git init -q kernel
+( cd kernel
+  git remote add origin "$KERNEL_REPO"
+  git fetch -q --depth 1 origin "$SHA" || git fetch -q --depth 200 origin "$KERNEL_BRANCH"
+  git checkout -q "$SHA"
+) || fail "checkout $SHA"
 KROOT="$W/kernel"
 echo "::endgroup::"
 
