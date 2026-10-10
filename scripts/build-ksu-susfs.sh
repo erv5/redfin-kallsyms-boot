@@ -44,9 +44,14 @@ sudo apt-get update -qq
 sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev cpio lz4 zip unzip jq \
   binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi >/dev/null
 wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- "$CLANG_VER" >/dev/null 2>&1 || true
-for t in clang clang++ ld.lld llvm-ar llvm-nm llvm-objcopy llvm-strip llvm-readelf llvm-ranlib llvm-as; do
-  sudo ln -sf "/usr/bin/${t}-${CLANG_VER}" "/usr/local/bin/${t}" 2>/dev/null || true
+# ensure the FULL llvm tool suite (full LTO + MODVERSIONS CRC generation needs llvm-objdump)
+sudo apt-get install -y -qq "llvm-${CLANG_VER}" "lld-${CLANG_VER}" >/dev/null 2>&1 || true
+# symlink every clang/lld/llvm-* tool (incl. llvm-objdump) to its unsuffixed name
+for f in /usr/bin/clang-${CLANG_VER} /usr/bin/clang++-${CLANG_VER} /usr/bin/ld.lld-${CLANG_VER} /usr/bin/llvm-*-${CLANG_VER}; do
+  [ -e "$f" ] || continue
+  b=$(basename "$f"); sudo ln -sf "$f" "/usr/local/bin/${b%-${CLANG_VER}}" 2>/dev/null || true
 done
+command -v llvm-objdump >/dev/null && echo "llvm-objdump: $(command -v llvm-objdump)" || note "llvm-objdump still missing"
 clang --version | head -1
 curl -fL "$PDG_URL" | tar xz && chmod +x payload-dumper-go
 gh release download -R topjohnwu/Magisk --pattern 'Magisk-v*.apk' --dir . --clobber
