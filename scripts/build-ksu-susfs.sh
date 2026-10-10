@@ -109,7 +109,9 @@ $C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH \
    -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
    -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_ENABLE_LOG \
    -d CONFIG_KSU_SUSFS_SUS_MOUNT -d CONFIG_KSU_SUSFS_TRY_UMOUNT -d CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT 2>/dev/null || true
-$C $F -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL -e CONFIG_THINLTO 2>/dev/null || true
+# Use FULL LTO like stock redbull + crDroid (THINLTO on arm64 + MODVERSIONS emits ABS32
+# relocs against __crc_* symbols that lld rejects). Keep KALLSYMS_ALL for the KPM data syms.
+$C $F -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL -d CONFIG_THINLTO 2>/dev/null || true
 sed -i "s/printf '%s' -dirty/printf '%s' ''/g" scripts/setlocalversion 2>/dev/null || true
 make O=out ARCH=arm64 LLVM=1 olddefconfig >/dev/null || note "olddefconfig warnings"
 grep -E 'CONFIG_KSU=|CONFIG_KSU_SUSFS' out/.config | tee "$OUT/config.txt" || note "KSU configs missing"
