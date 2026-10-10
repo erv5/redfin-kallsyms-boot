@@ -252,3 +252,14 @@ index 9bc2ded25..daa9296a1 100644
  
  	return 0;
  }
+diff --git a/KernelSU/kernel/ksu.c b/KernelSU/kernel/ksu.c
+index f3e13004e..c05bfea7c 100644
+--- a/KernelSU/kernel/ksu.c
++++ b/KernelSU/kernel/ksu.c
+@@ -102,4 +102,6 @@ module_exit(ksu_kernelsu_exit);
+ MODULE_LICENSE("GPL");
+ MODULE_AUTHOR("weishu");
+ MODULE_DESCRIPTION("Android KernelSU");
++#ifdef MODULE_IMPORT_NS
+ MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
++#endif
