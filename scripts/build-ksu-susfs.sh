@@ -96,6 +96,35 @@ cp "$W/susfs/kernel_patches/include/linux/"* include/linux/ 2>/dev/null
 patch -p1 < "$W/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch" || note "50_add rejects (fs/namespace.c SUS_MOUNT + mount.h are expected; SUS_MOUNT is off)"
 # add the vfsmount susfs field (the mount.h hunk rejects on this tree)
 patch -p1 < "$WS/patches/ksunext/0002-mount-vfsmount-field.patch" || note "mount.h field patch failed"
+# Backport path_umount/can_umount for KSU_UMOUNT (absent on 4.19, added upstream in 5.9).
+# crDroid backports these via a Makefile sed that races the build order; do it up-front.
+python3 - "$KROOT" <<'PY'
+import sys, os, re
+kr = sys.argv[1]
+ns = os.path.join(kr, "fs/namespace.c"); s = open(ns).read()
+if "int path_umount(" not in s and "static bool is_mnt_ns_file(" in s:
+    code = (
+"static int can_umount(const struct path *path, int flags)\n{\n"
+"\tstruct mount *mnt = real_mount(path->mnt);\n"
+"\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n"
+"\tif (!may_mount())\n\t\treturn -EPERM;\n"
+"\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n"
+"\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n"
+"\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\treturn -EINVAL;\n"
+"\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n"
+"\treturn 0;\n}\n"
+"int path_umount(struct path *path, int flags)\n{\n"
+"\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n"
+"\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n"
+"\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\n")
+    s = s.replace("static bool is_mnt_ns_file(", code + "\nstatic bool is_mnt_ns_file(", 1)
+    open(ns, "w").write(s); print("[note] backported path_umount into fs/namespace.c")
+ih = os.path.join(kr, "fs/internal.h"); s2 = open(ih).read()
+if "int path_umount(" not in s2:
+    s2 = re.sub(r"(extern void __init mnt_init\(void\);\n)",
+                r"\1int path_umount(struct path *path, int flags);\n", s2, count=1)
+    open(ih, "w").write(s2); print("[note] declared path_umount in fs/internal.h")
+PY
 find "$KROOT" -name '*.rej' | while read -r r; do rel="${r#$KROOT/}"; mkdir -p "$REJ/$(dirname "$rel")"; cp "$r" "$REJ/$rel"; done
 REJN=$(find "$KROOT" -name '*.rej' | wc -l | tr -d ' ')
 note "rejects after SUSFS patches: $REJN (fs/namespace.c SUS_MOUNT reject is expected)"
