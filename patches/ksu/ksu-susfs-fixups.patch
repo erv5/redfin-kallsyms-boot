@@ -266,6 +266,34 @@ index f3e13004e..c05bfea7c 100644
 +#ifdef MODULE_IMPORT_NS
  MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 +#endif
+diff --git a/KernelSU/kernel/selinux/rules.c b/KernelSU/kernel/selinux/rules.c
+index 9a6b91dcc..eead94d7a 100644
+--- a/KernelSU/kernel/selinux/rules.c
++++ b/KernelSU/kernel/selinux/rules.c
+@@ -9,7 +9,6 @@
+ #include "linux/lsm_audit.h"
+ #include "xfrm.h"
+ 
+-#define SELINUX_POLICY_INSTEAD_SELINUX_SS
+ 
+ #define KERNEL_SU_DOMAIN "su"
+ #define KERNEL_SU_FILE "ksu_file"
+@@ -19,8 +18,15 @@
+ static struct policydb *get_policydb(void)
+ {
+ 	struct policydb *db;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
+ 	struct selinux_policy *policy = rcu_dereference(selinux_state.policy);
+ 	db = &policy->policydb;
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
++	struct selinux_ss *ss = rcu_dereference(selinux_state.ss);
++	db = &ss->policydb;
++#else
++	db = &policydb;
++#endif
+ 	return db;
+ }
+ 
 diff --git a/KernelSU/kernel/selinux/sepolicy.c b/KernelSU/kernel/selinux/sepolicy.c
 index 7759602c7..8153c9366 100644
 --- a/KernelSU/kernel/selinux/sepolicy.c
