@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         variant: [full, safe]
-        offset: [0, 1]     # 0 = latest OTA, 1 = previous; covers the current 09-28 build + latest, rolls forward
+        offset: [0, 1, 2]  # last 3 los-* releases (like the KALLSYMS build), so 09-28 etc. are covered
     concurrency:
       group: ksu-susfs-${{ matrix.variant }}-${{ matrix.offset }}
       cancel-in-progress: false

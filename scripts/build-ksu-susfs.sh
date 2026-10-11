@@ -31,19 +31,19 @@ LOG="$OUT/build.log"; : > "$LOG"
 fail(){ echo "[FATAL] $*" | tee -a "$LOG"; exit 1; }
 note(){ echo "[note] $*" | tee -a "$LOG"; }
 
-echo "::group::1. Select LineageOS $DEVICE OTA (offset ${BUILD_OFFSET:-0}, 0=newest)"
+echo "::group::1. Pick target OTA from our los-* KALLSYMS releases (offset ${BUILD_OFFSET:-0}, 0=newest)"
 OFFSET="${BUILD_OFFSET:-0}"
-curl -fsSL "https://download.lineageos.org/api/v2/devices/${DEVICE}/builds" > builds.json || fail "LOS API"
-BUILD=$(jq -c --argjson off "$OFFSET" 'sort_by(.datetime) | .[-1 - $off] // empty' builds.json)
-[ -n "$BUILD" ] || { note "no build at offset $OFFSET (fewer builds available); nothing to do"; echo "SKIP=1" >> "${GITHUB_ENV:-/dev/null}"; exit 0; }
-OTA_URL=$(echo "$BUILD" | jq -r '.files[]|select(.filename|endswith(".zip"))|.url' | tail -1)
-OTA_NAME=$(echo "$BUILD" | jq -r '.files[]|select(.filename|endswith(".zip"))|.filename' | tail -1)
-[ -n "$OTA_URL" ] && [ "$OTA_URL" != null ] || fail "no OTA zip at offset $OFFSET"
-OTA_DATE=$(echo "$OTA_NAME" | grep -oE '[0-9]{8}' | head -1); [ -n "$OTA_DATE" ] || OTA_DATE=unknown
+# Source from our own persistent KALLSYMS releases (los-YYYYMMDD): each carries a stock-ramdisk
+# boot.img + the exact kernel version, and they survive LineageOS pruning old builds from its API.
+mapfile -t LOS < <(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name' 2>/dev/null | grep -E '^los-[0-9]{8}$' | sort -ru)
+TARGET="${LOS[$OFFSET]:-}"
+[ -n "$TARGET" ] || { note "no los-* release at offset $OFFSET (have ${#LOS[@]}); nothing to do"; echo "SKIP=1" >> "${GITHUB_ENV:-/dev/null}"; exit 0; }
+OTA_DATE="${TARGET#los-}"
+OTA_NAME="lineage-23.2-${OTA_DATE}-nightly-redfin-signed.zip"
 TAG="ksunext-susfs${SUF}-${OTA_DATE}"
-note "OTA $OTA_NAME (LOS $OTA_DATE), variant=$VARIANT, tag=$TAG"
-# skip early if this exact release already exists (keeps weekly re-runs cheap)
-if gh release view "$TAG" -R "${GITHUB_REPOSITORY:-}" >/dev/null 2>&1; then
+note "source=$TARGET (LOS $OTA_DATE), variant=$VARIANT, tag=$TAG"
+# skip early if this exact release already exists (keeps re-runs cheap)
+if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
   note "release $TAG already exists; nothing to do."; echo "SKIP=1" >> "${GITHUB_ENV:-/dev/null}"; exit 0
 fi
 echo "::endgroup::"
@@ -68,14 +68,14 @@ unzip -o Magisk-v*.apk 'lib/x86_64/libmagiskboot.so' -d mgsk >/dev/null
 cp mgsk/lib/x86_64/libmagiskboot.so magiskboot && chmod +x magiskboot
 echo "::endgroup::"
 
-echo "::group::3. OTA boot.img + kernel version"
-curl -fL -o ota.zip "$OTA_URL"
-unzip -o ota.zip payload.bin >/dev/null
-./payload-dumper-go -p boot -o . payload.bin >/dev/null
-[ -f boot.img ] || fail "no boot.img"
+echo "::group::3. Fetch boot.img from $TARGET + read kernel version"
+gh release download "$TARGET" -R "$GITHUB_REPOSITORY" --pattern 'boot-kallsyms-*.img' --dir . --clobber || fail "download $TARGET boot"
+BOOTSRC=$(ls boot-kallsyms-*.img 2>/dev/null | head -1)
+[ -n "$BOOTSRC" ] || fail "no boot-kallsyms-*.img in $TARGET"
+cp "$BOOTSRC" boot.img
 mkdir -p bx && cp boot.img bx/ && ( cd bx && ../magiskboot unpack boot.img >/dev/null )
 VER=$(strings bx/kernel | grep -m1 -oE '4\.19\.[0-9]+-[a-z0-9]+-[a-z0-9]+-g[0-9a-f]{8,}')
-[ -n "$VER" ] || fail "cannot read kernel version from OTA"
+[ -n "$VER" ] || fail "cannot read kernel version from $TARGET boot"
 SHA=$(echo "$VER" | grep -oE 'g[0-9a-f]+$' | sed 's/^g//')
 note "OTA kernel $VER (commit $SHA)"
 echo "::endgroup::"
