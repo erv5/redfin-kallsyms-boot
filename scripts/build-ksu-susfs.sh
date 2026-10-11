@@ -19,6 +19,8 @@ KERNEL_BRANCH="${KERNEL_BRANCH:-lineage-23.2}"
 DEFCONFIG="${DEFCONFIG:-redbull_defconfig}"
 CLANG_VER="${CLANG_VER:-20}"
 KSUNEXT_REF="${KSUNEXT_REF:-v1.1.1}"   # version crDroid's patches target
+VARIANT="${VARIANT:-full}"             # full = SUS_MOUNT on (max hiding); safe = SUS_MOUNT off (lower boot risk)
+SUF=""; [ "$VARIANT" = safe ] && SUF="-safe"
 PDG_URL="https://github.com/ssut/payload-dumper-go/releases/download/1.3.0/payload-dumper-go_1.3.0_linux_amd64.tar.gz"
 AK3_REPO="https://github.com/osm0sis/AnyKernel3"
 WS="${GITHUB_WORKSPACE:-$PWD}"
@@ -29,14 +31,21 @@ LOG="$OUT/build.log"; : > "$LOG"
 fail(){ echo "[FATAL] $*" | tee -a "$LOG"; exit 1; }
 note(){ echo "[note] $*" | tee -a "$LOG"; }
 
-echo "::group::1. Latest LineageOS $DEVICE OTA"
+echo "::group::1. Select LineageOS $DEVICE OTA (offset ${BUILD_OFFSET:-0}, 0=newest)"
+OFFSET="${BUILD_OFFSET:-0}"
 curl -fsSL "https://download.lineageos.org/api/v2/devices/${DEVICE}/builds" > builds.json || fail "LOS API"
-OTA_URL=$(jq -r 'sort_by(.datetime)|last|.files[]|select(.filename|endswith(".zip"))|.url' builds.json | tail -1)
-OTA_NAME=$(jq -r 'sort_by(.datetime)|last|.files[]|select(.filename|endswith(".zip"))|.filename' builds.json | tail -1)
-[ -n "$OTA_URL" ] && [ "$OTA_URL" != null ] || fail "no OTA"
+BUILD=$(jq -c --argjson off "$OFFSET" 'sort_by(.datetime) | .[-1 - $off] // empty' builds.json)
+[ -n "$BUILD" ] || { note "no build at offset $OFFSET (fewer builds available); nothing to do"; echo "SKIP=1" >> "${GITHUB_ENV:-/dev/null}"; exit 0; }
+OTA_URL=$(echo "$BUILD" | jq -r '.files[]|select(.filename|endswith(".zip"))|.url' | tail -1)
+OTA_NAME=$(echo "$BUILD" | jq -r '.files[]|select(.filename|endswith(".zip"))|.filename' | tail -1)
+[ -n "$OTA_URL" ] && [ "$OTA_URL" != null ] || fail "no OTA zip at offset $OFFSET"
 OTA_DATE=$(echo "$OTA_NAME" | grep -oE '[0-9]{8}' | head -1); [ -n "$OTA_DATE" ] || OTA_DATE=unknown
-TAG="ksunext-susfs-${OTA_DATE}"
-note "OTA $OTA_NAME (LOS $OTA_DATE)"
+TAG="ksunext-susfs${SUF}-${OTA_DATE}"
+note "OTA $OTA_NAME (LOS $OTA_DATE), variant=$VARIANT, tag=$TAG"
+# skip early if this exact release already exists (keeps weekly re-runs cheap)
+if gh release view "$TAG" -R "${GITHUB_REPOSITORY:-}" >/dev/null 2>&1; then
+  note "release $TAG already exists; nothing to do."; echo "SKIP=1" >> "${GITHUB_ENV:-/dev/null}"; exit 0
+fi
 echo "::endgroup::"
 
 echo "::group::2. Toolchain + tools"
@@ -137,11 +146,18 @@ cd "$KROOT"
 make O=out ARCH=arm64 "$DEFCONFIG" >/dev/null || fail "defconfig"
 C=./scripts/config; F="--file out/.config"
 $C $F -e CONFIG_KSU 2>/dev/null || true
-# Full SUSFS set. SUS_MOUNT's fs/namespace.c hunks are merged via patches/ksunext/0003.
-$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH -e CONFIG_KSU_SUSFS_SUS_MOUNT \
-   -e CONFIG_KSU_SUSFS_SUS_KSTAT -e CONFIG_KSU_SUSFS_TRY_UMOUNT -e CONFIG_KSU_SUSFS_SPOOF_UNAME \
-   -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-   -e CONFIG_KSU_SUSFS_OPEN_REDIRECT -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT -e CONFIG_KSU_SUSFS_ENABLE_LOG 2>/dev/null || true
+# Common SUSFS hiding (both variants): path/kstat/uname/cmdline/open-redirect/symbol-hiding.
+$C $F -e CONFIG_KSU_SUSFS -e CONFIG_KSU_SUSFS_SUS_PATH -e CONFIG_KSU_SUSFS_SUS_KSTAT \
+   -e CONFIG_KSU_SUSFS_SPOOF_UNAME -e CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+   -e CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG -e CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+   -e CONFIG_KSU_SUSFS_ENABLE_LOG 2>/dev/null || true
+# SUS_MOUNT set (mount hiding): 'full' only. It rewrites the mount-alloc path (merged via
+# patches/ksunext/0003); 'safe' leaves it off for lower first-boot risk, same multi-user root.
+if [ "$VARIANT" = full ]; then
+  $C $F -e CONFIG_KSU_SUSFS_SUS_MOUNT -e CONFIG_KSU_SUSFS_TRY_UMOUNT -e CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT 2>/dev/null || true
+else
+  $C $F -d CONFIG_KSU_SUSFS_SUS_MOUNT -d CONFIG_KSU_SUSFS_TRY_UMOUNT -d CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT 2>/dev/null || true
+fi
 # Use FULL LTO like stock redbull + crDroid (THINLTO on arm64 + MODVERSIONS emits ABS32
 # relocs against __crc_* symbols that lld rejects). Keep KALLSYMS_ALL for the KPM data syms.
 $C $F -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL -d CONFIG_THINLTO 2>/dev/null || true
@@ -165,7 +181,7 @@ echo "::endgroup::"
 echo "::group::9. Package (only if built and version matches)"
 if [ "$BUILT" = 1 ] && [ -f out/arch/arm64/boot/Image ] && [ "$REL" = "$VER" ]; then
   cp out/arch/arm64/boot/Image "$W/bx/kernel"
-  ( cd "$W/bx" && "$W/magiskboot" repack boot.img "$OUT/boot-ksunext-susfs-${OTA_DATE}.img" >/dev/null ) && note "wrote boot-ksunext-susfs-${OTA_DATE}.img" || note "repack failed"
+  ( cd "$W/bx" && "$W/magiskboot" repack boot.img "$OUT/boot-ksunext-susfs${SUF}-${OTA_DATE}.img" >/dev/null ) && note "wrote boot-ksunext-susfs${SUF}-${OTA_DATE}.img" || note "repack failed"
   git clone -q --depth 1 "$AK3_REPO" "$W/ak3" && rm -rf "$W/ak3/.git"
   cp out/arch/arm64/boot/Image "$W/ak3/Image"
   cat > "$W/ak3/anykernel.sh" <<AK
@@ -185,12 +201,12 @@ ramdisk_compression=auto;
 split_boot;
 flash_boot;
 AK
-  ( cd "$W/ak3" && zip -r9 "$OUT/boot-ksunext-susfs-${OTA_DATE}.zip" . -x '.git*' >/dev/null ) && note "wrote boot-ksunext-susfs-${OTA_DATE}.zip"
+  ( cd "$W/ak3" && zip -r9 "$OUT/boot-ksunext-susfs${SUF}-${OTA_DATE}.zip" . -x '.git*' >/dev/null ) && note "wrote boot-ksunext-susfs${SUF}-${OTA_DATE}.zip"
 else
   note "no flashable output (build failed or version mismatch); see rejects + build.log"
 fi
 echo "::endgroup::"
 
-{ echo "TAG=$TAG"; echo "OTA_DATE=$OTA_DATE"; echo "OTA_NAME=$OTA_NAME"; echo "VER=$VER"; echo "REL=$REL"; echo "BUILT=$BUILT"; echo "REJECTS=$REJN"; } >> "${GITHUB_ENV:-/dev/null}"
-echo "SUMMARY built=$BUILT rejects=$REJN kernelrelease_match=$([ "$REL" = "$VER" ] && echo yes || echo no)"
+{ echo "TAG=$TAG"; echo "VARIANT=$VARIANT"; echo "SUF=$SUF"; echo "OTA_DATE=$OTA_DATE"; echo "OTA_NAME=$OTA_NAME"; echo "VER=$VER"; echo "REL=$REL"; echo "BUILT=$BUILT"; echo "REJECTS=$REJN"; } >> "${GITHUB_ENV:-/dev/null}"
+echo "SUMMARY variant=$VARIANT built=$BUILT rejects=$REJN kernelrelease_match=$([ "$REL" = "$VER" ] && echo yes || echo no)"
 [ "$BUILT" = 1 ] && [ "$REL" = "$VER" ] && exit 0 || exit 3

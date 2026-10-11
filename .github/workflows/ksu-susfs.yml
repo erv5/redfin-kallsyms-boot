@@ -1,9 +1,11 @@
 name: KSU-Next + SUSFS (redfin)
 
-# Builds a KernelSU-Next + SUSFS redfin kernel matching the latest LineageOS OTA, using
-# crDroid's proven redbull integration (KSU-Next v1.1.1 + SUSFS v1.5.7). On success it
-# publishes a ready-to-flash boot.img + AnyKernel3 zip as a Release, and always uploads
-# the build log + any rejects as artifacts. Runs every Wednesday + on demand.
+# Builds KernelSU-Next + SUSFS redfin kernels matching the latest LineageOS OTA, using
+# crDroid's proven redbull integration (KSU-Next v1.1.1 + SUSFS v1.5.5). Two variants:
+#   full = SUS_MOUNT on  (max hiding)        -> release ksunext-susfs-<date>
+#   safe = SUS_MOUNT off (lower boot risk)   -> release ksunext-susfs-safe-<date>
+# Both give multi-user root. Publishes a boot.img + AnyKernel3 zip per variant and always
+# uploads build log + rejects. Runs every Wednesday + on demand.
 
 on:
   schedule:
@@ -13,13 +15,17 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: ksu-susfs
-  cancel-in-progress: false
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [full, safe]
+        offset: [0, 1]     # 0 = latest OTA, 1 = previous; covers the current 09-28 build + latest, rolls forward
+    concurrency:
+      group: ksu-susfs-${{ matrix.variant }}-${{ matrix.offset }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
@@ -29,24 +35,26 @@ jobs:
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
           df -h /
 
-      - name: Build KSU-Next + SUSFS
+      - name: Build KSU-Next + SUSFS (${{ matrix.variant }})
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          VARIANT: ${{ matrix.variant }}
+          BUILD_OFFSET: ${{ matrix.offset }}
         run: bash scripts/build-ksu-susfs.sh
 
       - name: Upload build log + rejects (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ksu-susfs-logs
+          name: ksu-susfs-logs-${{ matrix.variant }}-${{ matrix.offset }}
           path: |
             artifacts/build.log
             artifacts/config.txt
             artifacts/kernelrelease.txt
             artifacts/rejects/**
-            artifacts/boot-ksunext-susfs-*.img
-            artifacts/boot-ksunext-susfs-*.zip
+            artifacts/boot-ksunext-susfs*.img
+            artifacts/boot-ksunext-susfs*.zip
           if-no-files-found: warn
 
       - name: Publish release (on success)
@@ -54,24 +62,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # replace any existing release for this OTA (idempotent re-runs)
+          # replace any existing release for this variant+OTA (idempotent; distinct tag per variant, no race)
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --title "LineageOS $OTA_DATE (redfin, KSU-Next + SUSFS)" \
+            --title "LineageOS $OTA_DATE (redfin, KSU-Next + SUSFS, $VARIANT)" \
             --notes "$(cat <<EOF
-          Ready-to-flash KernelSU-Next + SUSFS boot image for LineageOS \`redfin\`, matching:
+          Ready-to-flash KernelSU-Next + SUSFS boot image for LineageOS \`redfin\` (variant: **$VARIANT**), matching:
           - LineageOS OTA: \`$OTA_NAME\`
           - Kernel: \`$VER\` (same version string as stock, so your vendor modules still load)
-          - KernelSU-Next v1.1.1 + SUSFS, via crDroid's redbull integration.
+          - KernelSU-Next v1.1.1 + SUSFS v1.5.5. Multi-user root works (grant from User 0).
+
+          **full** = maximum hiding (SUS_MOUNT + mount/path/kstat/uname/cmdline hiding on).
+          **safe** = same multi-user root, SUS_MOUNT off (lower first-boot risk). Use this if full bootloops.
 
           ## Flashing
           1. Take the LineageOS update and reboot.
-          2. Download \`boot-ksunext-susfs-$OTA_DATE.img\` (or the AnyKernel3 \`.zip\`) below.
-          3. \`fastboot flash boot boot-ksunext-susfs-$OTA_DATE.img\` on both slots and reboot, or sideload the zip in LineageOS recovery.
-          4. Install the KernelSU-Next Manager, grant root. Multi-user: manage grants from User 0; root in User 10/work profiles works (see README).
+          2. Download \`boot-ksunext-susfs${SUF}-$OTA_DATE.img\` (or the AnyKernel3 \`.zip\`) below.
+          3. \`fastboot flash boot <img>\` on both slots and reboot, or sideload the zip in LineageOS recovery.
+          4. Install the KernelSU-Next Manager, grant root. For User 10 / work-profile apps, grant from User 0.
 
-          Keep your original boot.img as a fallback.
+          Keep a fallback boot (stock for this OTA, or your old APatch boot if it is for this OTA) to revert in one command.
           EOF
           )" \
-            artifacts/boot-ksunext-susfs-*.img artifacts/boot-ksunext-susfs-*.zip
+            artifacts/boot-ksunext-susfs*.img artifacts/boot-ksunext-susfs*.zip
