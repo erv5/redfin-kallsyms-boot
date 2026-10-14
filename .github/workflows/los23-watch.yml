@@ -1,0 +1,26 @@
+name: LineageOS 23 self-build watch (redfin)
+
+# Cheap weekly check that tells you WHEN it becomes worth standing up our own
+# LineageOS 23 build. It never builds anything. It watches whether official redfin
+# 23 nightlies still ship and whether the lineage-23.x branch still gets commits,
+# and keeps one tracking issue updated, commenting only when a signal changes state.
+
+on:
+  schedule:
+    - cron: '0 10 * * 4'   # Thursdays, offset from the kernel builds
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check LineageOS 23 status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: bash scripts/los23-watch.sh
